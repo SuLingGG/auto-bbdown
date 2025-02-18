@@ -27,6 +27,9 @@ RUN ARCH=$(uname -m) && \
     rm BBDown.zip && \
     chmod +x ./bin/*
 
+# 创建 BBDown.data 软链接
+RUN touch /app/config/BBDown.data && ln -s /app/config/BBDown.data /app/bin/BBDown.data
+
 # 设置 cron 任务
 RUN CRONTAB_JOB=$(cat /app/config/auto-bbdown.config | grep CRONTAB_TIME | cut -d '"' -f 2) && echo "$CRONTAB_JOB" >> /etc/crontab
 
