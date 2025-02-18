@@ -5,7 +5,6 @@ source ./config/auto-bbdown.config
 
 # 创建日志目录
 mkdir -p "$LOG_DIR"
-# 定义日志文件路径
 LOG_FILE="$LOG_DIR/bbdown_$(date +%Y-%m-%d).log"
 
 # 重定向标准输出和标准错误到日志文件，同时过滤掉特定的日志内容
@@ -23,7 +22,6 @@ MSG() {
     local EDIT_MODE="new"
     local TIMESTAMP=$(get_timestamp)
 
-    # 判断消息类型
     if [[ "$MESSAGE" == *"[INFO]"* ]]; then
         MSG_TYPE="INFO"
         MESSAGE=${MESSAGE//\[INFO\]/}
@@ -32,7 +30,6 @@ MSG() {
         MESSAGE=${MESSAGE//\[DEBUG\]/}
     fi
 
-    # 判断编辑模式
     if [[ "$MESSAGE" == *"[EDIT_BEFORE]"* ]]; then
         EDIT_MODE="before"
         MESSAGE=${MESSAGE//\[EDIT_BEFORE\]/}
@@ -44,12 +41,10 @@ MSG() {
     local FULL_MSG="${TIMESTAMP} - ${MESSAGE}"
     local CLEAN_MSG=$(echo "$FULL_MSG" | sed -E 's/\[.*\]//g')
 
-    # 输出消息到日志
     if { [ "$MSG_TYPE" = "INFO" ] || [ "$LOG_MSG_DEBUG" = "true" ]; }; then
         echo "$FULL_MSG"
     fi
 
-    # 发送消息到 Telegram
     if [ "$ENABLE_TG_MSG" = "true" ]; then
         if { [ "$MSG_TYPE" = "INFO" ] || { [ "$MSG_TYPE" = "DEBUG" ] && [ "$TG_MSG_DEBUG" = "true" ]; }; }; then
             case $EDIT_MODE in
@@ -80,7 +75,7 @@ MSG() {
     fi
 }
 
-# 记录失败日志函数
+# 错误日志函数
 FAILED_LOGS() {
     mkdir -p "$LOG_DIR/failed-logs"
     FAILED_DYNAMIC_DATA=$(cat "$DYNAMIC_DATA")
@@ -97,7 +92,7 @@ FAILED_LOGS() {
     } > "$FAILED_LOG_FILE"
 }
 
-# 创建锁文件函数，防止多实例运行
+# 锁文件函数
 CREATE_LOCK() {
     if [ -f "$LOCK_FILE" ]; then
         MSG "[DEBUG]另一个实例正在运行，退出..."
@@ -127,9 +122,8 @@ DYNAMIC_RESPONSE=$(curl -s 'https://api.bilibili.com/x/polymer/web-dynamic/v1/fe
     -H 'sec-fetch-site: same-site' \
     -H 'user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36')
 
-# 检查是否存在动态数据文件
+# 检查动态数据文件是否存在，不存在则下载第一个视频
 if [ ! -f "$DYNAMIC_DATA" ]; then
-    # 解析新的动态数据
     NEW_DYNAMIC_DATA=$(echo "$DYNAMIC_RESPONSE" | jq '[.data.items[] | select(.modules.module_dynamic.major.type == "MAJOR_TYPE_ARCHIVE") | {name: .modules.module_author.name, title: .modules.module_dynamic.major.archive.title, bvid: .modules.module_dynamic.major.archive.bvid, mid: .modules.module_author.mid}]')
     
     case "$DOWNLOAD_MODE" in
@@ -150,8 +144,15 @@ if [ ! -f "$DYNAMIC_DATA" ]; then
             
             if [ $BBDOWN_EXIT_CODE -eq 0 ]; then
                 MSG "[INFO][EDIT_AFTER]首次运行，已下载 ${NAME} 的稿件「${TITLE}」(${FIRST_BVID})。"
+            else
+                MSG "[INFO][EDIT_AFTER]稿件下载失败。%0A调试信息:%0AFIRST_BVID:${FIRST_BVID}%0ANAME:%0A${NAME}%0ATITLE:%0A${TITLE}%0ANEW_DYNAMIC_DATA:%0A${NEW_DYNAMIC_DATA}"
+                FAILED_LOGS
+            fi
+            ;;
             
         "black"|"white")
+            MODE_NAME=$([ "$DOWNLOAD_MODE" = "black" ] && echo "黑名单" || echo "白名单")
+            MSG "[INFO]检测到脚本第一次运行，由于已定义下载${MODE_NAME}，脚本将在后续运行过程中检测并下载新增视频。"
             ;;
     esac
     
@@ -162,8 +163,101 @@ fi
 # 解析新的动态数据
 NEW_DYNAMIC_DATA=$(echo "$DYNAMIC_RESPONSE" | jq '[.data.items[] | select(.modules.module_dynamic.major.type == "MAJOR_TYPE_ARCHIVE") | {name: .modules.module_author.name, title: .modules.module_dynamic.major.archive.title, bvid: .modules.module_dynamic.major.archive.bvid, mid: .modules.module_author.mid}]')
 
-# 查找新的视频数据
+# 对比脚本两次运行之间是否有新视频投稿动态
 CHANGE_VIDEO_DATA=$(jq --slurpfile old "$DYNAMIC_DATA" '($old[0] | map(.bvid)) as $old_bvids | [ .[] | select( .bvid as $bvid | $old_bvids | index($bvid) == null ) ]' <<< "$NEW_DYNAMIC_DATA")
 
-# 如果没有检测到新视频，退出
+if [ "$(jq -r 'length' <<< "$CHANGE_VIDEO_DATA")" -eq 0 ]; then
+    MSG "[DEBUG]未检测到新视频，跳过下载。"
+    echo "$NEW_DYNAMIC_DATA" > "$DYNAMIC_DATA"
+    rm -f "$MSG_ID_FILE"
+    exit 0
+fi
+
+# 过滤 UP 主 ID
+FILTERED_DATA=$(jq --arg MODE "$DOWNLOAD_MODE" \
+    --arg UP_IDS "$UP_ID" \
+    -r '
+    ($UP_IDS | split(",") | map(tonumber)) as $ID_LIST |
+    if $MODE == "black" then
+        [ .[] | select( .mid as $m | $ID_LIST | index($m) == null ) ]
+    elif $MODE == "white" then
+        [ .[] | select( .mid as $m | $ID_LIST | index($m) != null ) ]
+    else
+        .
+    end' <<< "$CHANGE_VIDEO_DATA")
+
+# 检查过滤后的数据是否为空，为空则跳过下载
+if [ "$DOWNLOAD_MODE" = "black" ] && [ "$(jq -r 'length' <<< "$FILTERED_DATA")" -eq 0 ]; then
+    MSG "[DEBUG]新投稿视频全部命中 UP 主下载黑名单，跳过下载。"
+    echo "$NEW_DYNAMIC_DATA" > "$DYNAMIC_DATA"
+    rm -f "$MSG_ID_FILE"
+    exit 0
+fi
+
+if [ "$DOWNLOAD_MODE" = "white" ] && [ "$(jq -r 'length' <<< "$FILTERED_DATA")" -eq 0 ]; then
+    MSG "[DEBUG]新投稿视频全部未命中 UP 主下载白名单，跳过下载。"
+    echo "$NEW_DYNAMIC_DATA" > "$DYNAMIC_DATA"
+    rm -f "$MSG_ID_FILE"
+    exit 0
+fi
+
+# 下载视频
+case "$DOWNLOAD_MODE" in
+    "black"|"white")
+        MSG "[DEBUG]当前下载模式：$([ "$DOWNLOAD_MODE" = "black" ] && echo "黑名单模式" || echo "白名单模式")。"
+        MSG "[DEBUG]过滤名单中的 UP 主 ID：${UP_ID//,/, }。"
+
+        while read -r DATA; do
+            NAME=$(jq -r '.name' <<< "$DATA")
+            TITLE=$(jq -r '.title' <<< "$DATA")
+            BVID=$(jq -r '.bvid' <<< "$DATA")
+            
+            MSG "[INFO][EDIT_BEFORE]正在下载 ${NAME} 的新稿件「${TITLE}」(${BVID})..."
+            
+            cd "$ROOT_DOWNLOAD_DIR" || exit 1
+            if [ "$ENABLE_BBDOWN_LOG" = "true" ]; then
+                $BBDOWN "https://www.bilibili.com/video/$BVID"
+            else
+                $BBDOWN "https://www.bilibili.com/video/$BVID" >/dev/null 2>&1
+            fi
+            BBDOWN_EXIT_CODE=$?
+            
+            if [ $BBDOWN_EXIT_CODE -eq 0 ]; then
+                MSG "[INFO][EDIT_AFTER]已下载 ${NAME} 的新稿件「${TITLE}」(${BVID})。"
+            else
+                MSG "[INFO][EDIT_AFTER]稿件下载失败。%0A调试信息:%0ADATA:${DATA}%0ACHANGE_VIDEO_DATA:%0A${CHANGE_VIDEO_DATA}%0ANEW_DYNAMIC_DATA:%0A${NEW_DYNAMIC_DATA}"
+                FAILED_LOGS
+            fi
+        done <<< "$(jq -c '.[]' <<< "$FILTERED_DATA")"
+        echo "$NEW_DYNAMIC_DATA" > "$DYNAMIC_DATA"
+        ;;
+        
+    "all")
+        while read -r DATA; do
+            NAME=$(jq -r '.name' <<< "$DATA")
+            TITLE=$(jq -r '.title' <<< "$DATA")
+            BVID=$(jq -r '.bvid' <<< "$DATA")
+            
+            MSG "[INFO][EDIT_BEFORE]正在下载 ${NAME} 的新稿件「${TITLE}」(${BVID})..."
+            
+            cd "$ROOT_DOWNLOAD_DIR" || exit 1
+            if [ "$ENABLE_BBDOWN_LOG" = "true" ]; then
+                $BBDOWN "https://www.bilibili.com/video/$BVID"
+            else
+                $BBDOWN "https://www.bilibili.com/video/$BVID" >/dev/null 2>&1
+            fi
+            BBDOWN_EXIT_CODE=$?
+            
+            if [ $BBDOWN_EXIT_CODE -eq 0 ]; then
+                MSG "[INFO][EDIT_AFTER]已下载 ${NAME} 的新稿件「${TITLE}」(${BVID})。"
+            else
+                MSG "[INFO][EDIT_AFTER]稿件下载失败。%0A调试信息:%0ADATA:${DATA}%0ACHANGE_VIDEO_DATA:%0A${CHANGE_VIDEO_DATA}%0ANEW_DYNAMIC_DATA:%0A${NEW_DYNAMIC_DATA}"
+                FAILED_LOGS
+            fi
+        done <<< "$(jq -c '.[]' <<< "$CHANGE_VIDEO_DATA")"
+        echo "$NEW_DYNAMIC_DATA" > "$DYNAMIC_DATA"
+        ;;
+esac
+
+# 删除消息 ID 文件
 rm -f "$MSG_ID_FILE"
