@@ -1,19 +1,17 @@
-# auto-bbdown/README.md
+# auto-bbdown
 
-# Auto BBDown
-
-Auto BBDown 是一个用于自动下载 B 站视频的脚本，支持通过 Telegram 发送下载状态通知。该项目使用 Docker 容器化，方便部署和使用。
+auto-bbdown.sh 个用于自动下载 B 站关注 UP 主最新投稿视频的脚本，支持通过 Telegram 发送下载状态通知。该项目使用 Docker 容器化，方便部署和使用。
 
 ## 项目结构
 
 ```
 auto-bbdown
 ├── config
-│   ├── auto-bbdown.config
-│   └── BBDown.config
-├── auto-bbdown.sh
-├── Dockerfile
-└── README.md
+│   ├── auto-bbdown.config  # 本项目脚本配置目录
+│   └── BBDown.config  # BBDown 程序配置文件
+├── auto-bbdown.sh  # 核心脚本
+├── Dockerfile  # 用于构建 Docker 镜像的 Dockerfile 文件
+└── README.md  # 项目自述文件
 ```
 
 ## 文件说明
@@ -48,13 +46,6 @@ docker run -d \
 ```
 
 请将 `/path/to/bin、/path/to/config`、`/path/to/downloads` 和 `/path/to/logs` 替换为您本地的实际路径。
-
-## 配置说明
-
-- **CRONTAB_TIME**: 脚本运行间隔，默认为每 15 分钟运行一次。
-- **ENABLE_BBDOWN_LOG**: 是否启用 BBDown 日志。
-- **ENABLE_TG_MSG**: 是否启用 Telegram 消息通知。
-- **DOWNLOAD_MODE**: 下载模式，可以设置为 `all`、`black` 或 `white`。
 
 ## 许可证
 
